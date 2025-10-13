@@ -212,7 +212,7 @@ async def find_face(
                     image_name += 1
                     save_path = os.path.join(target_img_dir, f_name)
                     cv2.imwrite(save_path, fresh_img)
-                    find_match.append(f'http://157.157.221.29:8003/{save_path}')
+                    find_match.append(f'https://9s2vp2mren4e22-8003.proxy.runpod.net/{save_path}')
                 else:
                     print(f" → Face Image not Found! (sim={best_sim if 'best_sim' in locals() else 'N/A'})")
 
