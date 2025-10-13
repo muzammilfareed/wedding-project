@@ -212,7 +212,7 @@ async def find_face(
                     image_name += 1
                     save_path = os.path.join(target_img_dir, f_name)
                     cv2.imwrite(save_path, fresh_img)
-                    find_match.append(f'http://157.173.221.163:8003/{save_path}')
+                    find_match.append(f'http://157.157.221.29:8003/{save_path}')
                 else:
                     print(f" → Face Image not Found! (sim={best_sim if 'best_sim' in locals() else 'N/A'})")
 
@@ -239,4 +239,4 @@ async def find_face(
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8888, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8003, reload=False)
