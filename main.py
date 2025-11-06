@@ -226,7 +226,7 @@ async def find_face_fast(
                     if img_base in file
                 ]
                 for img_path in img_candidates:
-                    local_matches.append(f"https://api.mystudioitsolutions.com/{img_path}")
+                    local_matches.append(f"{img_path}")
         return local_matches
 
     # Run multi-threaded similarity search
@@ -259,3 +259,4 @@ async def find_face_fast(
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8888, reload=False)
+
