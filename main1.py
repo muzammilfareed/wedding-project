@@ -15,29 +15,16 @@ import requests
 import json
 import shutil
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-
-
 app_faces = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 app_faces.prepare(ctx_id=0, det_thresh=0.75, det_size=(640, 640))  # ctx_id=0 -> use GPU
-from typing import Optional
 
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # or specify your frontend domain
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 SIMILARITY_THRESHOLD = 0.5
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
 
 def flatten_image_folder(source_dir: str):
     valid_exts = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff")
@@ -67,8 +54,6 @@ def flatten_image_folder(source_dir: str):
     for dirpath, dirnames, filenames in os.walk(source_dir, topdown=False):
         if dirpath != source_dir and not os.listdir(dirpath):
             os.rmdir(dirpath)
-
-
 def save_image_from_url(url, save_dir):
     try:
         response = requests.get(url, stream=True)
@@ -82,21 +67,38 @@ def save_image_from_url(url, save_dir):
         print(f"Failed to download {url}: {e}")
         return None
 
+# @app.post("/upload")
+# async def upload_zip(
+#     data_zip: UploadFile,
+#     wedding_name: str = Form(...)
+# ):
+#     timestamp = int(time.time())
+#     folder_name = f"{wedding_name}_{timestamp}"
+#     folder_name_embs = f"{wedding_name}_{timestamp}_embeddings"
+#     target_folder = os.path.join(UPLOAD_DIR, folder_name)
+#     target_folder_embs = os.path.join(UPLOAD_DIR, folder_name_embs)
+#     os.makedirs(target_folder, exist_ok=True)
+#     os.makedirs(target_folder_embs, exist_ok=True)
 
+#     zip_path = os.path.join(target_folder, data_zip.filename)
+#     with open(zip_path, "wb") as buffer:
+#         shutil.copyfileobj(data_zip.file, buffer)
+
+#     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+#         zip_ref.extractall(target_folder)
+
+#     os.remove(zip_path)
+
+#     flatten_image_folder(target_folder)
 @app.post("/upload_urls")
 async def upload_urls(
-        image_urls: str = Form(...),
-        wedding_name: str = Form(...),
-        wedding_folder_id: Optional[str] = Form(None)
+    image_urls: str = Form(...), 
+    wedding_name: str = Form(...)
 ):
     timestamp = int(time.time())
-    print("wedding_folder_id:", wedding_folder_id)
     folder_name = f"{wedding_name}_{timestamp}"
     folder_name_embs = f"{wedding_name}_{timestamp}_embeddings"
-    if wedding_folder_id:
-        folder_name = wedding_folder_id
-        folder_name_embs = f"{folder_name}_embeddings"
-
+    
     target_folder = os.path.join(UPLOAD_DIR, folder_name)
     target_folder_embs = os.path.join(UPLOAD_DIR, folder_name_embs)
     os.makedirs(target_folder, exist_ok=True)
@@ -108,9 +110,9 @@ async def upload_urls(
     saved_files = []
     # image_urls = json.loads(image_urls)
     for url in image_urls:
-        print('url: ', url)
+        print('url: ',url)
         saved = save_image_from_url(url, target_folder)
-        print("save:", saved)
+        print("save:",saved)
         if saved:
             saved_files.append(saved)
 
@@ -156,16 +158,14 @@ async def upload_urls(
             "wedding_folder_id": None
         })
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 @app.post("/find_person")
-async def find_face_fast(
-        input_img: UploadFile,
-        wedding_folder_id: str = Form(...)
+async def find_face(
+    input_img: UploadFile,
+    wedding_folder_id: str = Form(...)
 ):
-    # timestamp = int(time.time())
+    timestamp = int(time.time())
 
-    # Save input image
     img_path = os.path.join(UPLOAD_DIR, input_img.filename)
     with open(img_path, "wb") as buffer:
         shutil.copyfileobj(input_img.file, buffer)
@@ -175,87 +175,68 @@ async def find_face_fast(
     target_folder = os.path.join(UPLOAD_DIR, folder_name)
     target_folder_embs = os.path.join(UPLOAD_DIR, folder_name_embs)
 
-    if not os.path.exists(target_folder) or not os.path.exists(target_folder_embs):
-        return JSONResponse({
-            "message": "Wedding folder not found for given ID.",
-            "match_list": []
-        })
+    target_img_name = os.path.splitext(input_img.filename)[0]
+    target_img_dir = os.path.join(UPLOAD_DIR, target_img_name)
+    os.makedirs(target_img_dir, exist_ok=True)
 
-    # Extract target face embedding
     target_img_np = cv2.imread(img_path)
-    if target_img_np is None:
-        return JSONResponse({"message": "Invalid image format", "match_list": []})
-
     faces = app_faces.get(target_img_np)
-    if not faces:
-        return JSONResponse({"message": "No face detected in input image", "match_list": []})
-
     largest_face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    target_embedding = largest_face.embedding.reshape(1, -1)
+    target_embedding = largest_face.embedding
+    find_match = []
+    image_name = 1
 
-    # === Step 1: Load all embeddings into memory efficiently ===
-    embs_list = os.listdir(target_folder_embs)
-    loaded_data = []
-    for emb_file in embs_list:
-        emb_path = os.path.join(target_folder_embs, emb_file)
-        try:
+    if os.path.exists(target_folder) and os.path.exists(target_folder_embs):
+        wedding_imgs = os.listdir(target_folder)
+        imgs_list = os.listdir(target_folder)
+        embs_list = os.listdir(target_folder_embs)
+        for emb in embs_list:
+            emb_name = os.path.splitext(emb)[0]
+            emb_path = os.path.join(target_folder_embs, emb)
             with open(emb_path, "rb") as f:
-                embeddings = pickle.load(f)
-            if isinstance(embeddings, list):
-                embeddings = np.array(embeddings)
-            else:
-                embeddings = np.array([embeddings])
-            loaded_data.append((emb_file, embeddings))
-        except Exception as e:
-            print(f"Failed to load {emb_file}: {e}")
+                loaded_embeddings = pickle.load(f)
+            sims = [cosine_similarity([target_embedding], [f])[0][0] for f in loaded_embeddings]
+            best_idx = int(np.argmax(sims))
+            best_sim = sims[best_idx]
 
-    # === Step 2: Compute similarities in parallel batches ===
-    batch_size = 256  # tune for performance depending on CPU cores
-    matches = []
-
-    def process_batch(batch_data):
-        local_matches = []
-        for emb_name, emb_array in batch_data:
-            sims = cosine_similarity(target_embedding, emb_array)[0]
-            best_sim = np.max(sims)
             if best_sim >= SIMILARITY_THRESHOLD:
-                img_base = os.path.splitext(emb_name)[0]
-                img_candidates = [
-                    os.path.join(target_folder, file)
-                    for file in os.listdir(target_folder)
-                    if img_base in file
-                ]
-                for img_path in img_candidates:
-                    local_matches.append(f"https://api.mystudioitsolutions.com/{img_path}")
-        return local_matches
+                wedding_image_path = ""
+                for wed in wedding_imgs:
+                    if emb_name in wed:
+                        wedding_image_path = os.path.join(target_folder, wed)
+                if wedding_image_path:
+                    img_name = os.path.basename(wedding_image_path)
+                    fresh_img = cv2.imread(wedding_image_path)
+                    print(f" → Face Found! (sim={best_sim if 'best_sim' in locals() else 'N/A'})")
+                    f_name = f'output_{image_name}.JPG'
+                    image_name += 1
+                    save_path = os.path.join(target_img_dir, f_name)
+                    cv2.imwrite(save_path, fresh_img)
+                    find_match.append(f'https://9s2vp2mren4e22-8003.proxy.runpod.net/{save_path}')
+                else:
+                    print(f" → Face Image not Found! (sim={best_sim if 'best_sim' in locals() else 'N/A'})")
 
-    # Run multi-threaded similarity search
-    num_workers = min(8, os.cpu_count() or 4)
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = []
-        for i in range(0, len(loaded_data), batch_size):
-            batch = loaded_data[i:i + batch_size]
-            futures.append(executor.submit(process_batch, batch))
-
-        for future in as_completed(futures):
-            matches.extend(future.result())
-
-    if matches:
-        # matches = sorted(matches, key=lambda x: x["similarity"], reverse=True)
-        return JSONResponse({
-            "status": True,
-            "message": "Matches found",
-            "match_count": len(matches),
-            "matches": matches  # return top 50 matches for performance
-        })
+            else:
+                print(f" → Face not Found! (sim={best_sim if 'best_sim' in locals() else 'N/A'})")
+        if len(os.listdir(target_img_dir)) > 0:
+            # shutil.make_archive(target_img_dir, 'zip', target_img_dir)
+            # shutil.rmtree(target_img_dir)
+            return JSONResponse({
+                "message": "Images found successfully successful",
+                "match_list": find_match
+            })
+        else:
+            shutil.rmtree(target_img_dir)
+            return JSONResponse({
+                "message": "No images found for target.",
+                "output_file": None
+            })
     else:
         return JSONResponse({
-            "status": False,
-            "message": "No similar faces found.",
-            "match_count": 0,
-            "matches": []
+            "message": "Wedding folder not found for given ID.",
+            "output_file": None
         })
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8888, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8003, reload=False)
