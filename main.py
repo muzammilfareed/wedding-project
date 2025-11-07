@@ -83,14 +83,95 @@ def save_image_from_url(url, save_dir):
         return None
 
 
+
+import json
+
+def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
+    os.makedirs(target_folder, exist_ok=True)
+    os.makedirs(target_folder_embs, exist_ok=True)
+
+    status_file = os.path.join(target_folder, "status.json")
+    # If status.json exists, update total_images, else create
+    if os.path.exists(status_file):
+        with open(status_file, "r") as f:
+            status_data = json.load(f)
+        status_data["total_images"] += len(image_urls_list)
+    else:
+        status_data = {
+            "total_images": len(image_urls_list),
+            "processed_images": 0,
+            "status": "processing"
+        }
+    with open(status_file, "w") as f:
+        json.dump(status_data, f)
+
+    # --- Step 1: Download images ---
+    def download(url):
+        return save_image_from_url(url, target_folder)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(download, url) for url in image_urls_list]
+        saved_files = [f.result() for f in as_completed(futures) if f.result()]
+
+    flatten_image_folder(target_folder)
+
+    # --- Step 2: Extract faces ---
+    imgs_list = os.listdir(target_folder)
+
+    def extract_face(img_file):
+        try:
+            img_path = os.path.join(target_folder, img_file)
+            img_np = cv2.imread(img_path)
+            faces = app_faces.get(img_np)
+            embeddings = []
+            for face in faces:
+                embeddings.append(face.embedding)
+            if embeddings:
+                emb_name = os.path.splitext(img_file)[0] + ".pkl"
+                emb_path = os.path.join(target_folder_embs, emb_name)
+                with open(emb_path, "wb") as f:
+                    pickle.dump(embeddings, f)
+            # --- Increment only here, after full processing ---
+            with open(status_file, "r+") as sf:
+                data = json.load(sf)
+                data["processed_images"] += 1
+                if data["processed_images"] > data["total_images"]:
+                    data["processed_images"] = data["total_images"]
+                sf.seek(0)
+                json.dump(data, sf)
+                sf.truncate()
+            return True
+        except Exception as e:
+            print("Error processing:", img_file, e)
+            return False
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(extract_face, img) for img in imgs_list]
+        for f in as_completed(futures):
+            f.result()  # wait for completion
+
+    # Mark complete
+    with open(status_file, "r+") as f:
+        data = json.load(f)
+        data["status"] = "completed"
+        f.seek(0)
+        json.dump(data, f)
+        f.truncate()
+
+
+
+
+from fastapi import BackgroundTasks
+
 @app.post("/upload_urls")
 async def upload_urls(
-        image_urls: str = Form(...),
-        wedding_name: str = Form(...),
-        wedding_folder_id: Optional[str] = Form(None)
+    background_tasks: BackgroundTasks,
+    image_urls: str = Form(...),
+    wedding_name: str = Form(...),
+    wedding_folder_id: Optional[str] = Form(None)
 ):
     timestamp = int(time.time())
-    print("wedding_folder_id:", wedding_folder_id)
     folder_name = f"{wedding_name}_{timestamp}"
     folder_name_embs = f"{wedding_name}_{timestamp}_embeddings"
     if wedding_folder_id:
@@ -99,62 +180,112 @@ async def upload_urls(
 
     target_folder = os.path.join(UPLOAD_DIR, folder_name)
     target_folder_embs = os.path.join(UPLOAD_DIR, folder_name_embs)
-    os.makedirs(target_folder, exist_ok=True)
-    os.makedirs(target_folder_embs, exist_ok=True)
 
-    # ✅ Download images from URLs
-    image_urls = json.loads(image_urls)
-    print(len(image_urls))
-    saved_files = []
-    # image_urls = json.loads(image_urls)
-    for url in image_urls:
-        print('url: ', url)
-        saved = save_image_from_url(url, target_folder)
-        print("save:", saved)
-        if saved:
-            saved_files.append(saved)
+    image_urls_list = json.loads(image_urls)
 
-    # ✅ Flatten or further process
-    flatten_image_folder(target_folder)
+    background_tasks.add_task(process_images_parallel, image_urls_list, target_folder, target_folder_embs)
 
-    imgs_list = os.listdir(target_folder)
-    if len(imgs_list) > 0:
-        status = False
-        for img in imgs_list:
-            try:
-                img_path = os.path.join(target_folder, img)
-                img_np = cv2.imread(img_path)
-                faces = app_faces.get(img_np)
-                known_faces = []
-                for face in faces:
-                    emb = face.embedding
-                    known_faces.append(emb)
-                img_name = os.path.splitext(img)[0]
-                emb_name = img_name + ".pkl"
-                emb_path = os.path.join(target_folder_embs, emb_name)
-                if len(known_faces) > 0:
-                    with open(emb_path, "wb") as f:
-                        pickle.dump(known_faces, f)
-                    status = True
-            except:
-                pass
-        if status is True:
-            return JSONResponse({
-                "message": "Upload & Face extractions successful ✅",
-                "wedding_folder_id": folder_name
-            })
+    return JSONResponse({
+        "message": "Upload started ✅. Face extraction is processing in the background.",
+        "wedding_folder_id": folder_name
+    })
+
+
+@app.get("/check_status/{wedding_folder_id}")
+async def check_status(wedding_folder_id: str):
+    folder_path = os.path.join(UPLOAD_DIR, wedding_folder_id)
+    status_file = os.path.join(folder_path, "status.json")
+
+    if not os.path.exists(status_file):
+        return JSONResponse({"message": "No task found for this folder", "status": "not_found"})
+
+    with open(status_file, "r+") as f:
+        data = json.load(f)
+        # Only mark as completed when all images are processed
+        if data["processed_images"] >= data["total_images"]:
+            data["status"] = "completed"
         else:
-            shutil.rmtree(target_folder)
-            shutil.rmtree(target_folder_embs)
-            return JSONResponse({
-                "message": "Somthing went wrong. Either No faces detected or folder is empty.",
-                "wedding_folder_id": None
-            })
-    else:
-        return JSONResponse({
-            "message": "Somthing went wrong. Either No faces detected or folder is empty.",
-            "wedding_folder_id": None
-        })
+            data["status"] = "processing"
+        # Save the updated status
+        f.seek(0)
+        json.dump(data, f)
+        f.truncate()
+
+    return JSONResponse(data)
+
+
+# @app.post("/upload_urls")
+# async def upload_urls(
+#         image_urls: str = Form(...),
+#         wedding_name: str = Form(...),
+#         wedding_folder_id: Optional[str] = Form(None)
+# ):
+#     timestamp = int(time.time())
+#     print("wedding_folder_id:", wedding_folder_id)
+#     folder_name = f"{wedding_name}_{timestamp}"
+#     folder_name_embs = f"{wedding_name}_{timestamp}_embeddings"
+#     if wedding_folder_id:
+#         folder_name = wedding_folder_id
+#         folder_name_embs = f"{folder_name}_embeddings"
+#
+#     target_folder = os.path.join(UPLOAD_DIR, folder_name)
+#     target_folder_embs = os.path.join(UPLOAD_DIR, folder_name_embs)
+#     os.makedirs(target_folder, exist_ok=True)
+#     os.makedirs(target_folder_embs, exist_ok=True)
+#
+#     # ✅ Download images from URLs
+#     image_urls = json.loads(image_urls)
+#     print(len(image_urls))
+#     saved_files = []
+#     # image_urls = json.loads(image_urls)
+#     for url in image_urls:
+#         print('url: ', url)
+#         saved = save_image_from_url(url, target_folder)
+#         print("save:", saved)
+#         if saved:
+#             saved_files.append(saved)
+#
+#     # ✅ Flatten or further process
+#     flatten_image_folder(target_folder)
+#
+#     imgs_list = os.listdir(target_folder)
+#     if len(imgs_list) > 0:
+#         status = False
+#         for img in imgs_list:
+#             try:
+#                 img_path = os.path.join(target_folder, img)
+#                 img_np = cv2.imread(img_path)
+#                 faces = app_faces.get(img_np)
+#                 known_faces = []
+#                 for face in faces:
+#                     emb = face.embedding
+#                     known_faces.append(emb)
+#                 img_name = os.path.splitext(img)[0]
+#                 emb_name = img_name + ".pkl"
+#                 emb_path = os.path.join(target_folder_embs, emb_name)
+#                 if len(known_faces) > 0:
+#                     with open(emb_path, "wb") as f:
+#                         pickle.dump(known_faces, f)
+#                     status = True
+#             except:
+#                 pass
+#         if status is True:
+#             return JSONResponse({
+#                 "message": "Upload & Face extractions successful ✅",
+#                 "wedding_folder_id": folder_name
+#             })
+#         else:
+#             shutil.rmtree(target_folder)
+#             shutil.rmtree(target_folder_embs)
+#             return JSONResponse({
+#                 "message": "Somthing went wrong. Either No faces detected or folder is empty.",
+#                 "wedding_folder_id": None
+#             })
+#     else:
+#         return JSONResponse({
+#             "message": "Somthing went wrong. Either No faces detected or folder is empty.",
+#             "wedding_folder_id": None
+#         })
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -226,7 +357,7 @@ async def find_face_fast(
                     if img_base in file
                 ]
                 for img_path in img_candidates:
-                    local_matches.append(f"https://api.mystudioitsolutions.com/{img_path}")
+                    local_matches.append(f"{img_path}")
         return local_matches
 
     # Run multi-threaded similarity search
