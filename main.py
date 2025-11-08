@@ -91,7 +91,6 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
     os.makedirs(target_folder_embs, exist_ok=True)
 
     status_file = os.path.join(target_folder, "status.json")
-    # If status.json exists, update total_images, else create
     if os.path.exists(status_file):
         with open(status_file, "r") as f:
             status_data = json.load(f)
@@ -105,14 +104,29 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
     with open(status_file, "w") as f:
         json.dump(status_data, f)
 
-    # --- Step 1: Download images ---
+    # --- Step 1: Download images with status increment ---
     def download(url):
-        return save_image_from_url(url, target_folder)
+        try:
+            result = save_image_from_url(url, target_folder)
+            return result
+        finally:
+            # Increment counter even if download fails
+            try:
+                with open(status_file, "r+") as sf:
+                    data = json.load(sf)
+                    data["processed_images"] += 1
+                    if data["processed_images"] > data["total_images"]:
+                        data["processed_images"] = data["total_images"]
+                    sf.seek(0)
+                    json.dump(data, sf)
+                    sf.truncate()
+            except Exception as e:
+                print("Error updating status during download:", e)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(download, url) for url in image_urls_list]
-        saved_files = [f.result() for f in as_completed(futures) if f.result()]
+        saved_files = [f.result() for f in as_completed(futures)]
 
     flatten_image_folder(target_folder)
 
@@ -121,21 +135,6 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
 
     def extract_face(img_file):
         img_path = os.path.join(target_folder, img_file)
-
-        # --- Increment processed_images first, no matter what ---
-        try:
-            with open(status_file, "r+") as sf:
-                data = json.load(sf)
-                data["processed_images"] += 1
-                if data["processed_images"] > data["total_images"]:
-                    data["processed_images"] = data["total_images"]
-                sf.seek(0)
-                json.dump(data, sf)
-                sf.truncate()
-        except Exception as e:
-            print("Error updating status for:", img_file, e)
-
-        # --- Process image safely ---
         try:
             img_np = cv2.imread(img_path)
             if img_np is None:
@@ -149,7 +148,6 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
                 emb_path = os.path.join(target_folder_embs, emb_name)
                 with open(emb_path, "wb") as f:
                     pickle.dump(embeddings, f)
-
             return True
         except Exception as e:
             print("Error processing image:", img_file, e)
@@ -160,13 +158,16 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
         for f in as_completed(futures):
             f.result()  # wait for completion
 
-    # Mark complete
+    # --- Mark complete ---
     with open(status_file, "r+") as f:
         data = json.load(f)
         data["status"] = "completed"
+        # Ensure processed_images == total_images at the end
+        data["processed_images"] = data["total_images"]
         f.seek(0)
         json.dump(data, f)
         f.truncate()
+
 
 
 
