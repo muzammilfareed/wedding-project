@@ -122,7 +122,7 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
     def extract_face(img_file):
         img_path = os.path.join(target_folder, img_file)
 
-        # --- Always increment processed count at the start ---
+        # --- Increment processed_images first, no matter what ---
         try:
             with open(status_file, "r+") as sf:
                 data = json.load(sf)
@@ -135,7 +135,7 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
         except Exception as e:
             print("Error updating status for:", img_file, e)
 
-        # --- Try to process the image ---
+        # --- Process image safely ---
         try:
             img_np = cv2.imread(img_path)
             if img_np is None:
@@ -152,7 +152,7 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
 
             return True
         except Exception as e:
-            print("Error processing:", img_file, e)
+            print("Error processing image:", img_file, e)
             return False
 
     with ThreadPoolExecutor(max_workers=4) as executor:
