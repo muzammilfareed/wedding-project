@@ -119,20 +119,51 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
     # --- Step 2: Extract faces ---
     imgs_list = os.listdir(target_folder)
 
+    # def extract_face(img_file):
+    #     try:
+    #         img_path = os.path.join(target_folder, img_file)
+    #         img_np = cv2.imread(img_path)
+    #         faces = app_faces.get(img_np)
+    #         embeddings = []
+    #         for face in faces:
+    #             embeddings.append(face.embedding)
+    #         if embeddings:
+    #             emb_name = os.path.splitext(img_file)[0] + ".pkl"
+    #             emb_path = os.path.join(target_folder_embs, emb_name)
+    #             with open(emb_path, "wb") as f:
+    #                 pickle.dump(embeddings, f)
+    #         # --- Increment only here, after full processing ---
+    #         with open(status_file, "r+") as sf:
+    #             data = json.load(sf)
+    #             data["processed_images"] += 1
+    #             if data["processed_images"] > data["total_images"]:
+    #                 data["processed_images"] = data["total_images"]
+    #             sf.seek(0)
+    #             json.dump(data, sf)
+    #             sf.truncate()
+    #         return True
+    #     except Exception as e:
+    #         print("Error processing:", img_file, e)
+    #         return False
     def extract_face(img_file):
+        img_path = os.path.join(target_folder, img_file)
         try:
-            img_path = os.path.join(target_folder, img_file)
             img_np = cv2.imread(img_path)
+            if img_np is None:
+                raise ValueError("Corrupted or unreadable image")
+
             faces = app_faces.get(img_np)
-            embeddings = []
-            for face in faces:
-                embeddings.append(face.embedding)
+            embeddings = [face.embedding for face in faces]
+
             if embeddings:
                 emb_name = os.path.splitext(img_file)[0] + ".pkl"
                 emb_path = os.path.join(target_folder_embs, emb_name)
                 with open(emb_path, "wb") as f:
                     pickle.dump(embeddings, f)
-            # --- Increment only here, after full processing ---
+        except Exception as e:
+            print(f"⚠️ Error processing {img_file}: {e}")
+        finally:
+            # ✅ Always increment processed count — even if the image failed
             with open(status_file, "r+") as sf:
                 data = json.load(sf)
                 data["processed_images"] += 1
@@ -141,10 +172,6 @@ def process_images_parallel(image_urls_list, target_folder, target_folder_embs):
                 sf.seek(0)
                 json.dump(data, sf)
                 sf.truncate()
-            return True
-        except Exception as e:
-            print("Error processing:", img_file, e)
-            return False
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(extract_face, img) for img in imgs_list]
